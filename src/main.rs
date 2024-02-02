@@ -1,8 +1,16 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::{collections::HashMap, env, str::FromStr, time::Duration};
 use tokio::time::sleep;
+
+#[derive(Clone, ValueEnum)]
+enum CliIpVersion {
+    #[value(name = "v6")]
+    IPv6,
+    #[value(name = "v4")]
+    IPv4,
+}
 
 #[derive(Parser)]
 struct Cli {
@@ -12,12 +20,23 @@ struct Cli {
     record_id: i64,
     #[arg(long)]
     delay: u16,
+    #[arg(long, value_enum)]
+    ip: Option<CliIpVersion>,
 }
+
+const IPV6: (&str, &str, &str) = ("https://api6.ipify.org", "IPv6", "AAAA");
+const IPV4: (&str, &str, &str) = ("https://api.ipify.org", "IPv4", "A");
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     let token = env::var("TOKEN").unwrap();
+
+    let (ip_url, ip_description, record_description) = match cli.ip {
+        Some(CliIpVersion::IPv6) => IPV6,
+        Some(CliIpVersion::IPv4) => IPV4,
+        None => IPV6,
+    };
 
     let client: reqwest::Client = reqwest::Client::new();
 
@@ -46,7 +65,7 @@ async fn main() {
 
     loop {
         let new_ip = client
-            .get("https://api6.ipify.org")
+            .get(ip_url)
             .send()
             .await
             .unwrap()
@@ -56,8 +75,8 @@ async fn main() {
 
         if new_ip != current_ip {
             println!(
-                "IPv6 address changed from {} to {}, updating AAAA record...",
-                current_ip, new_ip
+                "{} address changed from {} to {}, updating {} record...",
+                ip_description, current_ip, new_ip, record_description
             );
 
             let mut target_json = HashMap::new();
@@ -74,14 +93,14 @@ async fn main() {
                 .status();
 
             if result == StatusCode::OK {
-                println!("AAAA record updated");
+                println!("{} record updated", record_description);
             } else {
-                println!("Failed to update AAAA record");
+                println!("Failed to update {} record", record_description);
             }
 
             current_ip = new_ip;
         } else {
-            println!("IPv6 unchaged from {}", current_ip);
+            println!("{} unchaged from {}", ip_description, current_ip);
         }
 
         sleep(Duration::from_secs(cli.delay as u64)).await;

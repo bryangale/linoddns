@@ -1,3 +1,3 @@
 # linoddns
 
-Dynamically update the AAAA record for a domain using Linode nameservers.
+Dynamically update the A/AAAA record for a domain using Linode nameservers.
