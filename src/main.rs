@@ -28,6 +28,9 @@ const IPV6: (&str, &str, &str) = ("https://api6.ipify.org", "IPv6", "AAAA");
 const IPV4: (&str, &str, &str) = ("https://api.ipify.org", "IPv4", "A");
 
 const INDEFINITITE_RETRY_DELAY: Duration = Duration::from_secs(60);
+const LIMITED_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+const UPDATE_IP_RETRY_TIMES: u16 = 3;
 
 #[tokio::main]
 async fn main() {
@@ -83,19 +86,28 @@ async fn main() {
             );
 
             let mut target_json = HashMap::new();
-
             target_json.insert(String::from_str("target").unwrap(), &new_ip);
 
-            let result = client
-                .put(&record_url)
-                .bearer_auth(&token)
-                .json(&target_json)
-                .send()
-                .await
-                .unwrap()
-                .status();
+            let result = retry_times(UPDATE_IP_RETRY_TIMES, || async {
+                let status = client
+                    .put(&record_url)
+                    .bearer_auth(&token)
+                    .json(&target_json)
+                    .send()
+                    .await?
+                    .status();
 
-            if result == StatusCode::OK {
+                if status == StatusCode::OK {
+                    Ok::<(), _>(())
+                } else {
+                    Err::<_, Box<dyn Error>>(
+                        format!("Error updating {} address", ip_description).into(),
+                    )
+                }
+            })
+            .await;
+
+            if result.is_some() {
                 println!("{} record updated", record_description);
             } else {
                 println!("Failed to update {} record", record_description);
@@ -122,4 +134,23 @@ where
         }
         sleep(INDEFINITITE_RETRY_DELAY).await
     }
+}
+
+async fn retry_times<T, F, R, E>(times: u16, call: T) -> Option<R>
+where
+    T: Fn() -> F,
+    F: Future<Output = Result<R, E>>,
+{
+    for i in 0..=times {
+        let result = call().await;
+        if let Ok(value) = result {
+            return Some(value);
+        }
+
+        if i != times {
+            sleep(LIMITED_RETRY_DELAY).await
+        }
+    }
+
+    None
 }
