@@ -1,7 +1,7 @@
 use clap::Parser;
 use reqwest::StatusCode;
 use serde_json::Value;
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{collections::HashMap, env, str::FromStr, time::Duration};
 use tokio::time::sleep;
 
 #[derive(Parser)]
@@ -12,13 +12,12 @@ struct Cli {
     record_id: i64,
     #[arg(long)]
     delay: u16,
-    #[arg(long)]
-    token: String,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let token = env::var("TOKEN").unwrap();
 
     let client: reqwest::Client = reqwest::Client::new();
 
@@ -29,7 +28,7 @@ async fn main() {
 
     let record_json = client
         .get(&record_url)
-        .bearer_auth(&cli.token)
+        .bearer_auth(&token)
         .send()
         .await
         .unwrap()
@@ -67,7 +66,7 @@ async fn main() {
 
             let result = client
                 .put(&record_url)
-                .bearer_auth(&cli.token)
+                .bearer_auth(&token)
                 .json(&target_json)
                 .send()
                 .await
