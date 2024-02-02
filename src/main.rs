@@ -50,10 +50,44 @@ async fn main() {
         cli.domain_id, cli.record_id
     );
 
-    let mut current_ip = retry_indefinitely(|| async {
+    let mut current_ip = get_current_ip(&client, &token, &record_url, ip_description).await;
+
+    loop {
+        let new_ip = get_new_ip(&client, ip_url).await;
+
+        if new_ip != current_ip {
+            println!(
+                "{} address changed from {} to {}, updating {} record...",
+                ip_description, current_ip, new_ip, record_description
+            );
+
+            let result = update_ip(&new_ip, &client, &token, &record_url, ip_description).await;
+
+            if result.is_some() {
+                println!("{} record updated", record_description);
+            } else {
+                println!("Failed to update {} record", record_description);
+            }
+
+            current_ip = new_ip;
+        } else {
+            println!("{} unchaged from {}", ip_description, current_ip);
+        }
+
+        sleep(Duration::from_secs(cli.delay as u64)).await;
+    }
+}
+
+async fn get_current_ip(
+    client: &Client,
+    token: &str,
+    record_url: &str,
+    ip_description: &str,
+) -> String {
+    retry_indefinitely(|| async {
         let record_json = client
-            .get(&record_url)
-            .bearer_auth(&token)
+            .get(record_url)
+            .bearer_auth(token)
             .send()
             .await?
             .json::<HashMap<String, Value>>()
@@ -71,55 +105,42 @@ async fn main() {
             )
         }
     })
-    .await;
+    .await
+}
 
-    loop {
-        let new_ip = retry_indefinitely(|| async {
-            Ok::<String, Box<dyn Error>>(client.get(ip_url).send().await?.text().await?)
-        })
-        .await;
+async fn get_new_ip(client: &Client, ip_url: &str) -> String {
+    retry_indefinitely(|| async {
+        Ok::<String, Box<dyn Error>>(client.get(ip_url).send().await?.text().await?)
+    })
+    .await
+}
 
-        if new_ip != current_ip {
-            println!(
-                "{} address changed from {} to {}, updating {} record...",
-                ip_description, current_ip, new_ip, record_description
-            );
+async fn update_ip(
+    ip: &str,
+    client: &Client,
+    token: &str,
+    record_url: &str,
+    ip_description: &str,
+) -> Option<()> {
+    let mut target_json = HashMap::new();
+    target_json.insert(String::from_str("target").unwrap(), ip);
 
-            let mut target_json = HashMap::new();
-            target_json.insert(String::from_str("target").unwrap(), &new_ip);
+    retry_times(UPDATE_IP_RETRY_TIMES, || async {
+        let status = client
+            .put(record_url)
+            .bearer_auth(token)
+            .json(&target_json)
+            .send()
+            .await?
+            .status();
 
-            let result = retry_times(UPDATE_IP_RETRY_TIMES, || async {
-                let status = client
-                    .put(&record_url)
-                    .bearer_auth(&token)
-                    .json(&target_json)
-                    .send()
-                    .await?
-                    .status();
-
-                if status == StatusCode::OK {
-                    Ok::<(), _>(())
-                } else {
-                    Err::<_, Box<dyn Error>>(
-                        format!("Error updating {} address", ip_description).into(),
-                    )
-                }
-            })
-            .await;
-
-            if result.is_some() {
-                println!("{} record updated", record_description);
-            } else {
-                println!("Failed to update {} record", record_description);
-            }
-
-            current_ip = new_ip;
+        if status == StatusCode::OK {
+            Ok::<(), _>(())
         } else {
-            println!("{} unchaged from {}", ip_description, current_ip);
+            Err::<_, Box<dyn Error>>(format!("Error updating {} address", ip_description).into())
         }
-
-        sleep(Duration::from_secs(cli.delay as u64)).await;
-    }
+    })
+    .await
 }
 
 async fn retry_indefinitely<T, F, R, E>(call: T) -> R
