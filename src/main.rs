@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
-use reqwest::StatusCode;
+use reqwest::{Client, StatusCode};
 use serde_json::Value;
-use std::{collections::HashMap, env, str::FromStr, time::Duration};
+use std::{collections::HashMap, env, error::Error, future::Future, str::FromStr, time::Duration};
 use tokio::time::sleep;
 
 #[derive(Clone, ValueEnum)]
@@ -27,6 +27,8 @@ struct Cli {
 const IPV6: (&str, &str, &str) = ("https://api6.ipify.org", "IPv6", "AAAA");
 const IPV4: (&str, &str, &str) = ("https://api.ipify.org", "IPv4", "A");
 
+const INDEFINITITE_RETRY_DELAY: Duration = Duration::from_secs(60);
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -38,40 +40,41 @@ async fn main() {
         None => IPV6,
     };
 
-    let client: reqwest::Client = reqwest::Client::new();
+    let client: Client = Client::new();
 
     let record_url = format!(
         "https://api.linode.com/v4/domains/{}/records/{}",
         cli.domain_id, cli.record_id
     );
 
-    let record_json = client
-        .get(&record_url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap()
-        .json::<HashMap<String, Value>>()
-        .await
-        .unwrap();
+    let mut current_ip = retry_indefinitely(|| async {
+        let record_json = client
+            .get(&record_url)
+            .bearer_auth(&token)
+            .send()
+            .await?
+            .json::<HashMap<String, Value>>()
+            .await?;
 
-    let mut current_ip = (if let Value::String(target) = record_json.get("target").unwrap() {
-        Some(target)
-    } else {
-        None
+        if let Some(Value::String(target)) = record_json.get("target") {
+            Ok::<String, _>(target.clone())
+        } else {
+            Err::<_, Box<dyn Error>>(
+                format!(
+                    "Error extracting current {} address from response",
+                    ip_description
+                )
+                .into(),
+            )
+        }
     })
-    .unwrap()
-    .clone();
+    .await;
 
     loop {
-        let new_ip = client
-            .get(ip_url)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
+        let new_ip = retry_indefinitely(|| async {
+            Ok::<String, Box<dyn Error>>(client.get(ip_url).send().await?.text().await?)
+        })
+        .await;
 
         if new_ip != current_ip {
             println!(
@@ -104,5 +107,19 @@ async fn main() {
         }
 
         sleep(Duration::from_secs(cli.delay as u64)).await;
+    }
+}
+
+async fn retry_indefinitely<T, F, R, E>(call: T) -> R
+where
+    T: Fn() -> F,
+    F: Future<Output = Result<R, E>>,
+{
+    loop {
+        let result = call().await;
+        if let Ok(value) = result {
+            return value;
+        }
+        sleep(INDEFINITITE_RETRY_DELAY).await
     }
 }
